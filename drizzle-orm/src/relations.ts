@@ -226,6 +226,10 @@ export function processRelations(tablesConfig: TablesRelationalConfig, tables: S
 			relation.throughTable = reverseRelation.throughTable;
 			relation.isReversed = !where;
 			relation.where = where ?? reverseRelation.where;
+
+			const reverseRelationOperator = reverseRelation.operator;
+			relation.operator = reverseRelationOperator
+				&& (({ to: from, from: to }) => reverseRelationOperator({ from, to }));
 		}
 	}
 
@@ -293,6 +297,7 @@ export abstract class Relation<
 	};
 	throughTable?: SchemaEntry;
 	isReversed?: boolean;
+	operator?: LinkOperatorFn;
 
 	/** @internal */
 	sourceColumnTableNames: string[] = [];
@@ -357,6 +362,7 @@ export class One<
 			};
 		}
 		this.optional = (config?.optional ?? true) as TOptional;
+		this.operator = config?.operator;
 	}
 }
 
@@ -403,6 +409,7 @@ export class Many<TTargetTableName extends string> extends Relation<TTargetTable
 				target: (Array.isArray(config?.to) ? config.to : config?.to ? [config.to] : []).map((c) => c._.through!),
 			};
 		}
+		this.operator = config?.operator;
 	}
 }
 
@@ -1020,6 +1027,7 @@ export type AnyTableFilter = TableFilter<
 export interface OneConfig<TTargetTable extends SchemaEntry, TOptional extends boolean> {
 	from?: RelationsBuilderColumnBase | [RelationsBuilderColumnBase, ...RelationsBuilderColumnBase[]];
 	to?: RelationsBuilderColumnBase | [RelationsBuilderColumnBase, ...RelationsBuilderColumnBase[]];
+	operator?: LinkOperatorFn;
 	where?: TableFilter<TTargetTable>;
 	optional?: TOptional;
 	alias?: string;
@@ -1030,9 +1038,15 @@ export type AnyOneConfig = OneConfig<
 	boolean
 >;
 
+export type LinkOperatorFn = (config: {
+	from: SQL;
+	to: SQL;
+}) => SQL;
+
 export interface ManyConfig<TTargetTable extends SchemaEntry> {
 	from?: RelationsBuilderColumnBase | [RelationsBuilderColumnBase, ...RelationsBuilderColumnBase[]];
 	to?: RelationsBuilderColumnBase | [RelationsBuilderColumnBase, ...RelationsBuilderColumnBase[]];
+	operator?: LinkOperatorFn;
 	where?: TableFilter<TTargetTable>;
 	alias?: string;
 }
@@ -1544,6 +1558,8 @@ export function relationToSQL(
 	targetTable: SchemaEntry,
 	throughTable?: SchemaEntry,
 ): BuiltRelationFilters {
+	const operator = relation.operator ?? (({ from, to }) => eq(from, to));
+
 	if (relation.through) {
 		const outerColumnWhere = relation.sourceColumns.map((s, i) => {
 			const t = relation.through!.source[i]!;
@@ -1557,10 +1573,12 @@ export function relationToSQL(
 		const innerColumnWhere = relation.targetColumns.map((s, i) => {
 			const t = relation.through!.target[i]!;
 
-			return eq(
-				sql`${throughTable!}.${sql.identifier(is(t._.column, Column) ? casing.getColumnCasing(t._.column) : t._.key)}`,
-				sql`${targetTable}.${sql.identifier(casing.getColumnCasing(s))}`,
-			);
+			return operator({
+				from: sql`${throughTable!}.${
+					sql.identifier(is(t._.column, Column) ? casing.getColumnCasing(t._.column) : t._.key)
+				}`,
+				to: sql`${targetTable}.${sql.identifier(casing.getColumnCasing(s))}`,
+			});
 		});
 
 		return {
@@ -1577,10 +1595,10 @@ export function relationToSQL(
 	const columnWhere = relation.sourceColumns.map((s, i) => {
 		const t = relation.targetColumns[i]!;
 
-		return eq(
-			sql`${sourceTable}.${sql.identifier(casing.getColumnCasing(s))}`,
-			sql`${targetTable}.${sql.identifier(casing.getColumnCasing(t))}`,
-		);
+		return operator({
+			from: sql`${sourceTable}.${sql.identifier(casing.getColumnCasing(s))}`,
+			to: sql`${targetTable}.${sql.identifier(casing.getColumnCasing(t))}`,
+		});
 	});
 
 	const fullWhere = and(
